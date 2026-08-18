@@ -1,0 +1,17 @@
+{
+  "name": "luna-setup-bot",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Discord setup-bot voor Luna's Chillings",
+  "main": "index.js",
+  "engines": {
+    "node": ">=20.6.0"
+  },
+  "scripts": {
+    "start": "node index.js",
+    "test": "node --check index.js"
+  },
+  "dependencies": {
+    "discord.js": "14.27.0"
+  }
+}
