@@ -109,6 +109,7 @@ const CATEGORY_SPECS = [
   {
     key: "start",
     name: "🌙 START HIER",
+    aliases: ["🌙 Luna Chillings"],
     access: "public",
     channels: [
       { key: "welcome", name: "👋・welkom", type: "text", readOnly: true, topic: "Welkom bij Luna’s Chillings 🌙" },
@@ -135,7 +136,7 @@ const CATEGORY_SPECS = [
   {
     key: "media",
     name: "🎨 MEDIA & CREATIEF",
-    access: "verified",
+    access: "public",
     channels: [
       { key: "memes", name: "😂・memes", type: "text", topic: "Memes zonder spam." },
       { key: "photos", name: "📸・fotos-en-videos", type: "text", topic: "Deel foto’s, clips en andere media." },
@@ -147,7 +148,7 @@ const CATEGORY_SPECS = [
   {
     key: "gaming",
     name: "🎮 GAMING",
-    access: "verified",
+    access: "public",
     channels: [
       { key: "gamingchat", name: "🎮・gaming-chat", type: "text", topic: "Algemene gesprekken over games." },
       { key: "lfg", name: "🔎・zoek-een-team", type: "text", topic: "Vind mensen om samen mee te spelen." },
@@ -158,7 +159,7 @@ const CATEGORY_SPECS = [
   {
     key: "voice",
     name: "🔊 VOICE CHILLINGS",
-    access: "verified",
+    access: "public",
     channels: [
       { key: "voicegeneral", name: "🔊・De Chilling", type: "voice" },
       { key: "voicenight", name: "🌙・Late Night", type: "voice" },
@@ -196,6 +197,11 @@ const command = new SlashCommandBuilder()
       .setRequired(true)
   );
 
+const permissionsCommand = new SlashCommandBuilder()
+  .setName("rechten-bijwerken")
+  .setDescription("Werk alleen de rechten van bestaande Luna-kanalen bij")
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
+
 const botPermissions = new PermissionsBitField([
   PermissionFlagsBits.ViewChannel,
   PermissionFlagsBits.SendMessages,
@@ -228,9 +234,9 @@ function inviteUrl() {
 async function registerCommand(guildId) {
   const rest = new REST({ version: "10" }).setToken(TOKEN);
   await rest.put(Routes.applicationGuildCommands(client.user.id, guildId), {
-    body: [command.toJSON()]
+    body: [command.toJSON(), permissionsCommand.toJSON()]
   });
-  console.log("Slash-command /luna-setup is geregistreerd.");
+  console.log("Slash-commands /luna-setup en /rechten-bijwerken zijn geregistreerd.");
 }
 
 function permissionBits(names) {
@@ -241,11 +247,34 @@ function roleSpec(key) {
   return ROLE_SPECS.find((item) => item.key === key);
 }
 
+function findCategory(guild, categorySpec) {
+  const acceptedNames = [categorySpec.name, ...(categorySpec.aliases || [])];
+  return guild.channels.cache.find(
+    (candidate) => candidate.type === ChannelType.GuildCategory && acceptedNames.includes(candidate.name)
+  );
+}
+
 function overwriteForCategories(guild, roles, access) {
   const everyone = {
     id: guild.roles.everyone.id,
     type: OverwriteType.Role,
-    allow: access === "public" ? [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory] : [],
+    allow:
+      access === "public"
+        ? [
+            PermissionFlagsBits.ViewChannel,
+            PermissionFlagsBits.ReadMessageHistory,
+            PermissionFlagsBits.SendMessages,
+            PermissionFlagsBits.AddReactions,
+            PermissionFlagsBits.EmbedLinks,
+            PermissionFlagsBits.AttachFiles,
+            PermissionFlagsBits.CreatePublicThreads,
+            PermissionFlagsBits.SendMessagesInThreads,
+            PermissionFlagsBits.Connect,
+            PermissionFlagsBits.Speak,
+            PermissionFlagsBits.Stream,
+            PermissionFlagsBits.UseVAD
+          ]
+        : [],
     deny: access === "verified" ? [PermissionFlagsBits.ViewChannel] : []
   };
 
@@ -285,7 +314,15 @@ function overwriteForCategories(guild, roles, access) {
   overwrites.push({
     id: roles.get("muted").id,
     type: OverwriteType.Role,
-    deny: [PermissionFlagsBits.SendMessages, PermissionFlagsBits.AddReactions, PermissionFlagsBits.Speak, PermissionFlagsBits.Stream]
+    deny: [
+      PermissionFlagsBits.SendMessages,
+      PermissionFlagsBits.AddReactions,
+      PermissionFlagsBits.CreatePublicThreads,
+      PermissionFlagsBits.CreatePrivateThreads,
+      PermissionFlagsBits.SendMessagesInThreads,
+      PermissionFlagsBits.Speak,
+      PermissionFlagsBits.Stream
+    ]
   });
 
   overwrites.push({
@@ -320,6 +357,7 @@ function channelOverwrites(guild, roles, access, readOnly) {
     PermissionFlagsBits.SendMessages,
     PermissionFlagsBits.AddReactions,
     PermissionFlagsBits.CreatePublicThreads,
+    PermissionFlagsBits.CreatePrivateThreads,
     PermissionFlagsBits.SendMessagesInThreads
   );
 
@@ -357,9 +395,7 @@ async function ensureStructure(guild, roles) {
   let channelsCreated = 0;
 
   for (const categorySpec of CATEGORY_SPECS) {
-    let category = guild.channels.cache.find(
-      (candidate) => candidate.type === ChannelType.GuildCategory && candidate.name === categorySpec.name
-    );
+    let category = findCategory(guild, categorySpec);
 
     if (!category) {
       category = await guild.channels.create({
@@ -369,6 +405,11 @@ async function ensureStructure(guild, roles) {
         reason: "Luna Setup Bot"
       });
       categoriesCreated += 1;
+    } else {
+      await category.permissionOverwrites.set(
+        overwriteForCategories(guild, roles, categorySpec.access),
+        "Luna Setup Bot: categorie-rechten synchroniseren"
+      );
     }
 
     for (const channelSpec of categorySpec.channels) {
@@ -389,6 +430,11 @@ async function ensureStructure(guild, roles) {
         if (channelSpec.userLimit) options.userLimit = channelSpec.userLimit;
         channel = await guild.channels.create(options);
         channelsCreated += 1;
+      } else {
+        await channel.permissionOverwrites.set(
+          channelOverwrites(guild, roles, categorySpec.access, Boolean(channelSpec.readOnly)),
+          "Luna Setup Bot: kanaalrechten synchroniseren"
+        );
       }
 
       channels.set(channelSpec.key, channel);
@@ -396,6 +442,68 @@ async function ensureStructure(guild, roles) {
   }
 
   return { channels, categoriesCreated, channelsCreated };
+}
+
+async function existingPermissionRoles(guild) {
+  await guild.roles.fetch();
+  const roles = new Map();
+  const requiredKeys = [...MODERATOR_KEYS, "verified", "muted"];
+
+  for (const key of requiredKeys) {
+    const spec = roleSpec(key);
+    const role = guild.roles.cache.find((candidate) => !candidate.managed && candidate.name === spec.name);
+    if (role) roles.set(key, role);
+  }
+
+  const missing = requiredKeys.filter((key) => !roles.has(key)).map((key) => roleSpec(key).name);
+  if (missing.length > 0) {
+    throw new Error(`Deze rollen ontbreken: ${missing.join(", ")}. Voer eerst /luna-setup uit.`);
+  }
+
+  return roles;
+}
+
+async function updateExistingPermissions(guild) {
+  const roles = await existingPermissionRoles(guild);
+  await guild.channels.fetch();
+
+  let categoriesUpdated = 0;
+  let channelsUpdated = 0;
+  const missing = [];
+
+  for (const categorySpec of CATEGORY_SPECS) {
+    const category = findCategory(guild, categorySpec);
+    if (!category) {
+      missing.push(categorySpec.name);
+      continue;
+    }
+
+    await category.permissionOverwrites.set(
+      overwriteForCategories(guild, roles, categorySpec.access),
+      "Luna Setup Bot: categorie-rechten bijwerken"
+    );
+    categoriesUpdated += 1;
+
+    for (const channelSpec of categorySpec.channels) {
+      const discordType = channelSpec.type === "voice" ? ChannelType.GuildVoice : ChannelType.GuildText;
+      const channel = guild.channels.cache.find(
+        (candidate) => candidate.type === discordType && candidate.name === channelSpec.name && candidate.parentId === category.id
+      );
+
+      if (!channel) {
+        missing.push(`${category.name} / ${channelSpec.name}`);
+        continue;
+      }
+
+      await channel.permissionOverwrites.set(
+        channelOverwrites(guild, roles, categorySpec.access, Boolean(channelSpec.readOnly)),
+        "Luna Setup Bot: kanaalrechten bijwerken"
+      );
+      channelsUpdated += 1;
+    }
+  }
+
+  return { categoriesUpdated, channelsUpdated, missing };
 }
 
 function markedEmbed(title, description, color = 0x8b5cf6) {
@@ -711,7 +819,7 @@ client.once(Events.ClientReady, async (readyClient) => {
 
   for (const guild of readyClient.guilds.cache.values()) {
     await registerCommand(guild.id).catch((error) => {
-      console.error(`Registreren van /luna-setup in ${guild.name} mislukte:`, error);
+      console.error(`Registreren van de Luna-commando's in ${guild.name} mislukte:`, error);
     });
   }
 
@@ -724,30 +832,59 @@ client.once(Events.ClientReady, async (readyClient) => {
 
 client.on(Events.GuildCreate, async (guild) => {
   await registerCommand(guild.id).catch((error) => {
-    console.error("Registreren van /luna-setup na uitnodigen mislukte:", error);
+    console.error("Registreren van de Luna-commando's na uitnodigen mislukte:", error);
   });
   console.log("Gebruik nu: /luna-setup bevestigen:Ja");
 });
 
 client.on(Events.InteractionCreate, async (interaction) => {
   try {
-    if (interaction.isChatInputCommand() && interaction.commandName === "luna-setup") {
+    if (interaction.isChatInputCommand()) {
       if (!interaction.inGuild()) return;
 
       const allowed = interaction.user.id === interaction.guild.ownerId || interaction.memberPermissions.has(PermissionFlagsBits.Administrator);
       if (!allowed) {
-        await interaction.reply({ content: "Alleen de servereigenaar of een administrator kan deze setup starten.", flags: MessageFlags.Ephemeral });
+        await interaction.reply({ content: "Alleen de servereigenaar of een administrator kan dit commando gebruiken.", flags: MessageFlags.Ephemeral });
         return;
       }
 
-      if (!interaction.options.getBoolean("bevestigen", true)) {
-        await interaction.reply({ content: "Setup geannuleerd. Kies `Ja` bij bevestigen om te starten.", flags: MessageFlags.Ephemeral });
+      if (interaction.commandName === "rechten-bijwerken") {
+        if (runningSetups.has(interaction.guild.id)) {
+          await interaction.reply({ content: "Er draait al een setup of rechtenupdate. Probeer het zo nog eens.", flags: MessageFlags.Ephemeral });
+          return;
+        }
+
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        runningSetups.add(interaction.guild.id);
+        try {
+          const result = await updateExistingPermissions(interaction.guild);
+          const lines = [
+            "✅ **De rechten zijn bijgewerkt zonder kanalen opnieuw te maken.**",
+            `Categorieën bijgewerkt: **${result.categoriesUpdated}**`,
+            `Kanalen bijgewerkt: **${result.channelsUpdated}**`
+          ];
+          if (result.missing.length > 0) {
+            const shown = result.missing.slice(0, 10).join(", ");
+            const extra = result.missing.length > 10 ? ` en nog ${result.missing.length - 10}` : "";
+            lines.push(`Niet gevonden en overgeslagen: ${shown}${extra}.`);
+          }
+          await interaction.editReply(lines.join("\n"));
+        } finally {
+          runningSetups.delete(interaction.guild.id);
+        }
         return;
       }
 
-      await interaction.deferReply({ flags: MessageFlags.Ephemeral });
-      await runSetup(interaction);
-      return;
+      if (interaction.commandName === "luna-setup") {
+        if (!interaction.options.getBoolean("bevestigen", true)) {
+          await interaction.reply({ content: "Setup geannuleerd. Kies `Ja` bij bevestigen om te starten.", flags: MessageFlags.Ephemeral });
+          return;
+        }
+
+        await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+        await runSetup(interaction);
+        return;
+      }
     }
 
     if (!interaction.isButton() || !interaction.inGuild()) return;
