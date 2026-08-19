@@ -202,6 +202,37 @@ const permissionsCommand = new SlashCommandBuilder()
   .setDescription("Werk alleen de rechten van bestaande Luna-kanalen bij")
   .setDefaultMemberPermissions(PermissionFlagsBits.Administrator);
 
+const roleCommand = new SlashCommandBuilder()
+  .setName("role")
+  .setDescription("Geef een serverlid een rol of haal die rol weg")
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName("add")
+      .setDescription("Geef een serverlid een rol")
+      .addUserOption((option) => option.setName("lid").setDescription("Kies het serverlid").setRequired(true))
+      .addRoleOption((option) => option.setName("role").setDescription("Kies de rol").setRequired(true))
+  )
+  .addSubcommand((subcommand) =>
+    subcommand
+      .setName("remove")
+      .setDescription("Haal een rol bij een serverlid weg")
+      .addUserOption((option) => option.setName("lid").setDescription("Kies het serverlid").setRequired(true))
+      .addRoleOption((option) => option.setName("role").setDescription("Kies de rol").setRequired(true))
+  );
+
+const roleAllCommand = new SlashCommandBuilder()
+  .setName("roleall")
+  .setDescription("Geef alle gewone serverleden een specifieke rol")
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+  .addRoleOption((option) => option.setName("role").setDescription("Kies de rol").setRequired(true));
+
+const roleAllRemoveCommand = new SlashCommandBuilder()
+  .setName("roleallremove")
+  .setDescription("Haal een specifieke rol bij alle gewone serverleden weg")
+  .setDefaultMemberPermissions(PermissionFlagsBits.Administrator)
+  .addRoleOption((option) => option.setName("role").setDescription("Kies de rol").setRequired(true));
+
 const botPermissions = new PermissionsBitField([
   PermissionFlagsBits.ViewChannel,
   PermissionFlagsBits.SendMessages,
@@ -220,7 +251,7 @@ const botPermissions = new PermissionsBitField([
   PermissionFlagsBits.Speak
 ]);
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds] });
+const client = new Client({ intents: [GatewayIntentBits.Guilds, GatewayIntentBits.GuildMembers] });
 
 function inviteUrl() {
   const query = new URLSearchParams({
@@ -234,9 +265,15 @@ function inviteUrl() {
 async function registerCommand(guildId) {
   const rest = new REST({ version: "10" }).setToken(TOKEN);
   await rest.put(Routes.applicationGuildCommands(client.user.id, guildId), {
-    body: [command.toJSON(), permissionsCommand.toJSON()]
+    body: [
+      command.toJSON(),
+      permissionsCommand.toJSON(),
+      roleCommand.toJSON(),
+      roleAllCommand.toJSON(),
+      roleAllRemoveCommand.toJSON()
+    ]
   });
-  console.log("Slash-commands /luna-setup en /rechten-bijwerken zijn geregistreerd.");
+  console.log("De Luna-setup- en rollencommando's zijn geregistreerd.");
 }
 
 function permissionBits(names) {
@@ -504,6 +541,98 @@ async function updateExistingPermissions(guild) {
   }
 
   return { categoriesUpdated, channelsUpdated, missing };
+}
+
+function userError(message) {
+  const error = new Error(message);
+  error.userMessage = message;
+  return error;
+}
+
+async function assertManageableRole(guild, role) {
+  if (role.id === guild.roles.everyone.id) {
+    throw userError("De rol `@everyone` kan niet met dit commando worden aangepast.");
+  }
+  if (role.managed) {
+    throw userError("Deze rol wordt door Discord of een integratie beheerd en kan niet handmatig worden toegekend.");
+  }
+
+  const botMember = guild.members.me || (await guild.members.fetchMe());
+  if (botMember.roles.highest.comparePositionTo(role) <= 0) {
+    throw userError(`Zet de hoogste botrol in **Serverinstellingen → Rollen** boven ${role} en probeer het opnieuw.`);
+  }
+}
+
+async function handleSingleRoleCommand(interaction) {
+  const action = interaction.options.getSubcommand(true);
+  const user = interaction.options.getUser("lid", true);
+  const role = interaction.options.getRole("role", true);
+  await assertManageableRole(interaction.guild, role);
+
+  const member = await interaction.guild.members.fetch(user.id);
+  const hasRole = member.roles.cache.has(role.id);
+
+  if (action === "add") {
+    if (hasRole) {
+      await interaction.reply({ content: `${member} heeft ${role} al.`, flags: MessageFlags.Ephemeral });
+      return;
+    }
+    await member.roles.add(role, `Toegekend via /role add door ${interaction.user.tag}`);
+    await interaction.reply({ content: `✅ ${role} is aan ${member} gegeven.`, flags: MessageFlags.Ephemeral });
+    return;
+  }
+
+  if (!hasRole) {
+    await interaction.reply({ content: `${member} heeft ${role} niet.`, flags: MessageFlags.Ephemeral });
+    return;
+  }
+  await member.roles.remove(role, `Verwijderd via /role remove door ${interaction.user.tag}`);
+  await interaction.reply({ content: `✅ ${role} is bij ${member} weggehaald.`, flags: MessageFlags.Ephemeral });
+}
+
+async function handleRoleAllCommand(interaction, remove) {
+  const role = interaction.options.getRole("role", true);
+  await assertManageableRole(interaction.guild, role);
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  const members = await interaction.guild.members.fetch();
+  let changed = 0;
+  let skipped = 0;
+  let failed = 0;
+
+  for (const member of members.values()) {
+    if (member.user.bot) {
+      skipped += 1;
+      continue;
+    }
+
+    const hasRole = member.roles.cache.has(role.id);
+    if ((remove && !hasRole) || (!remove && hasRole)) {
+      skipped += 1;
+      continue;
+    }
+
+    try {
+      if (remove) {
+        await member.roles.remove(role, `Massaal verwijderd via /roleallremove door ${interaction.user.tag}`);
+      } else {
+        await member.roles.add(role, `Massaal toegekend via /roleall door ${interaction.user.tag}`);
+      }
+      changed += 1;
+    } catch (error) {
+      failed += 1;
+      console.warn(`Kon ${role.name} niet aanpassen voor ${member.user.tag}: ${error.message}`);
+    }
+  }
+
+  const actionText = remove ? "weggehaald" : "toegekend";
+  await interaction.editReply(
+    [
+      `✅ ${role} is bij **${changed}** leden ${actionText}.`,
+      `Overgeslagen: **${skipped}** (bots en leden zonder benodigde wijziging).`,
+      `Mislukt: **${failed}**.`
+    ].join("\n")
+  );
 }
 
 function markedEmbed(title, description, color = 0x8b5cf6) {
@@ -848,6 +977,21 @@ client.on(Events.InteractionCreate, async (interaction) => {
         return;
       }
 
+      if (interaction.commandName === "role") {
+        await handleSingleRoleCommand(interaction);
+        return;
+      }
+
+      if (interaction.commandName === "roleall") {
+        await handleRoleAllCommand(interaction, false);
+        return;
+      }
+
+      if (interaction.commandName === "roleallremove") {
+        await handleRoleAllCommand(interaction, true);
+        return;
+      }
+
       if (interaction.commandName === "rechten-bijwerken") {
         if (runningSetups.has(interaction.guild.id)) {
           await interaction.reply({ content: "Er draait al een setup of rechtenupdate. Probeer het zo nog eens.", flags: MessageFlags.Ephemeral });
@@ -897,7 +1041,7 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
   } catch (error) {
     console.error(error);
-    const message = "Er ging iets mis. Controleer in Railway of de bot voldoende rechten heeft en bekijk de logs.";
+    const message = error.userMessage || "Er ging iets mis. Controleer in Railway of de bot voldoende rechten heeft en bekijk de logs.";
     if (interaction.deferred || interaction.replied) {
       await interaction.editReply(message).catch(() => {});
     } else {
